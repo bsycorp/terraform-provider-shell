@@ -4,6 +4,11 @@ import (
 	"log"
 	"github.com/hashicorp/terraform/helper/schema"
 	"crypto/rand"
+	"fmt"
+	"path/filepath"
+	"os"
+	"io/ioutil"
+	"github.com/pkg/errors"
 )
 
 func resourceShellScript() *schema.Resource {
@@ -13,43 +18,48 @@ func resourceShellScript() *schema.Resource {
 		Read:   resourceShellScriptRead,
 		Update: resourceShellScriptUpdate,
 		Schema: map[string]*schema.Schema{
-			"lifecycle_commands": {
-				Type:     schema.TypeList,
-				Required: true,
-				ForceNew: true,
-				MaxItems: 1,
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"idempotent": {
-							Type:     schema.TypeBool,
-							Optional: true,
-							ForceNew: true,
-							Default: false,
-						},
-						"create": {
-							Type:     schema.TypeString,
-							Required: true,
-							ForceNew: false,
-						},
-						"read": {
-							Type:     schema.TypeString,
-							Optional: true,
-							ForceNew: false,
-							Default:  "IN=$(cat)\nprintf $IN >&3",
-						},
-						"update": {
-							Type:     schema.TypeString,
-							Optional: true,
-							ForceNew: false,
-							Default:  "",
-						},
-						"delete": {
-							Type:     schema.TypeString,
-							Required: true,
-							ForceNew: false,
-						},
-					},
+			"command_directory" : {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: false,
+				ValidateFunc: func(val interface{}, key string) (warns []string, errs []error) {
+					basePath := val.(string)
+					createScript := filepath.Join(basePath, "create.sh")
+					if _, err := os.Stat(createScript); os.IsNotExist(err) {
+						errs = append(errs, fmt.Errorf("can't find required scripts in command_directory: %q", createScript))
+					}
+					deleteScript := filepath.Join(basePath, "delete.sh")
+					if _, err := os.Stat(deleteScript); os.IsNotExist(err) {
+						errs = append(errs, fmt.Errorf("can't find required scripts in command_directory: %q", deleteScript))
+					}
+					return
 				},
+			},
+			"command_create": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: false,
+			},
+			"command_read": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: false,
+			},
+			"command_update": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: false,
+			},
+			"command_delete": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: false,
+			},
+			"idempotent": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				ForceNew: true,
+				Default: false,
 			},
 			"environment": {
 				Type:     schema.TypeMap,
@@ -80,10 +90,72 @@ func resourceShellScript() *schema.Resource {
 	}
 }
 
+func getScriptForAction(d *schema.ResourceData, action string) (string, error){
+	resultScript := ""
+	explicitCreateCommand := d.Get("command_create").(string)
+	commandDirectory := d.Get("command_directory").(string)
+
+	if explicitCreateCommand == "" && commandDirectory == "" {
+		//error is invalid definition
+		return "", errors.New("No explicit or inline commands are defined, invalid definition!")
+
+	} else if commandDirectory != "" {
+		var scriptErr error = nil
+		//check for default, might fail depending on action
+		_, defaultErr := getDefaultScriptForAction(action)
+		//find actual script, might be missing then can use default
+		resultScript, scriptErr = getDirectoryScriptForAction(d, action)
+		//if we don't have a script defined, and it doesn't have a default then fail, otherwise set default
+		if scriptErr != nil && defaultErr != nil {
+			return "", scriptErr
+		}
+
+	} else {
+		resultScript = d.Get("command_" + action).(string)
+	}
+
+	//if no script then use defaults
+	if resultScript == "" {
+		var defaultErr error = nil
+		resultScript, defaultErr = getDefaultScriptForAction(action)
+		if defaultErr != nil {
+			return "", errors.New("No command defined or found or could be defaulted for action: " + action)
+		}
+	}
+	return resultScript, nil
+}
+
+func getDirectoryScriptForAction(d *schema.ResourceData, action string) (string, error){
+	commandDirectory := d.Get("command_directory").(string)
+	scriptPath := filepath.Join(commandDirectory, action + ".sh")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("Can't find command from directory %q with name %q", commandDirectory, action + ".sh")
+	}
+
+	resultBytes, err := ioutil.ReadFile(scriptPath)
+	if err != nil {
+		//error is invalid definition
+		return "", fmt.Errorf("Error reading command from directory %q with name %q", commandDirectory, action + ".sh")
+	}
+	return string(resultBytes[:]), nil
+}
+
+func getDefaultScriptForAction(action string) (string, error) {
+	if action == "read" {
+		return "IN=$(cat)\nprintf $IN >&3", nil
+	} else if action == "read" {
+		return "", nil
+	} else {
+		return "", errors.New("No default script for action")
+	}
+}
+
 func resourceShellScriptCreate(d *schema.ResourceData, meta interface{}) error {
-	l := d.Get("lifecycle_commands").([]interface{})
-	c := l[0].(map[string]interface{})
-	command := c["create"].(string)
+	command, commandErr := getScriptForAction(d, "create")
+	if commandErr != nil {
+		return commandErr
+	}
+
 	vars := d.Get("environment").(map[string]interface{})
 	environment := readEnvironmentVariables(vars)
 	workingDirectory := d.Get("working_directory").(string)
@@ -130,9 +202,11 @@ func resourceShellScriptCreate(d *schema.ResourceData, meta interface{}) error {
 }
 
 func resourceShellScriptRead(d *schema.ResourceData, meta interface{}) error {
-	l := d.Get("lifecycle_commands").([]interface{})
-	c := l[0].(map[string]interface{})
-	command := c["read"].(string)
+	command, commandErr := getScriptForAction(d, "read")
+	if commandErr != nil {
+		return commandErr
+	}
+
 	vars := d.Get("environment").(map[string]interface{})
 	environment := readEnvironmentVariables(vars)
 	workingDirectory := d.Get("working_directory").(string)
@@ -166,13 +240,16 @@ func resourceShellScriptRead(d *schema.ResourceData, meta interface{}) error {
 }
 
 func resourceShellScriptUpdate(d *schema.ResourceData, meta interface{}) error {
-	l := d.Get("lifecycle_commands").([]interface{})
-	c := l[0].(map[string]interface{})
-	command := c["update"].(string)
-	//if command is idempotent and no overriding update is defined then just use the create command
-	if len(command) == 0 && c["idempotent"].(bool) == true {
-		command = c["create"].(string)
+	action := "update"
+	//if command is idempotent then use the create command
+	if d.Get("idempotent").(bool) == true {
+		action = "create"
 	}
+	command, commandErr := getScriptForAction(d, action)
+	if commandErr != nil {
+		return commandErr
+	}
+
 	vars := d.Get("environment").(map[string]interface{})
 	environment := readEnvironmentVariables(vars)
 	workingDirectory := d.Get("working_directory").(string)
@@ -188,9 +265,11 @@ func resourceShellScriptUpdate(d *schema.ResourceData, meta interface{}) error {
 
 func resourceShellScriptDelete(d *schema.ResourceData, meta interface{}) error {
 	log.Printf("[DEBUG] Deleting shell script resource")
-	l := d.Get("lifecycle_commands").([]interface{})
-	c := l[0].(map[string]interface{})
-	command := c["delete"].(string)
+	command, commandErr := getScriptForAction(d, "delete")
+	if commandErr != nil {
+		return commandErr
+	}
+
 	vars := d.Get("environment").(map[string]interface{})
 	environment := readEnvironmentVariables(vars)
 	workingDirectory := d.Get("working_directory").(string)

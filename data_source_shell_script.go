@@ -22,20 +22,10 @@ func dataSourceShellScript() *schema.Resource {
 		Read: dataSourceShellScriptRead,
 
 		Schema: map[string]*schema.Schema{
-			"lifecycle_commands": {
-				Type:     schema.TypeList,
+			"command_read": {
+				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
-				MaxItems: 1,
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"read": {
-							Type:     schema.TypeString,
-							Required: true,
-							ForceNew: true,
-						},
-					},
-				},
 			},
 			"environment": {
 				Type:     schema.TypeMap,
@@ -49,20 +39,13 @@ func dataSourceShellScript() *schema.Resource {
 				ForceNew: true,
 				Default:  ".",
 			},
-			"stderr": {
-				Type:     schema.TypeString,
+			"output_json": {
+				Type:     schema.TypeMap,
 				Computed: true,
-			},
-			"stdout": {
-				Type:     schema.TypeString,
-				Computed: true,
-			},
-			"extraout": {
-				Type:     schema.TypeString,
-				Computed: true,
+				Elem:     schema.TypeString,
 			},
 			"output": {
-				Type:     schema.TypeMap,
+				Type:     schema.TypeString,
 				Computed: true,
 				Elem:     schema.TypeString,
 			},
@@ -71,9 +54,7 @@ func dataSourceShellScript() *schema.Resource {
 }
 
 func dataSourceShellScriptRead(d *schema.ResourceData, meta interface{}) error {
-	l := d.Get("lifecycle_commands").([]interface{})
-	c := l[0].(map[string]interface{})
-	command := c["read"].(string)
+	command := d.Get("command_read").(string)
 	vars := d.Get("environment").(map[string]interface{})
 	environment := readEnvironmentVariables(vars)
 	workingDirectory := d.Get("working_directory").(string)
@@ -82,22 +63,19 @@ func dataSourceShellScriptRead(d *schema.ResourceData, meta interface{}) error {
 	shellMutexKV.Lock(shellScriptMutexKey)
 	defer shellMutexKV.Unlock(shellScriptMutexKey)
 
-	extraout, stdout, stderr, err := runCommand(command, input, environment, workingDirectory)
+	extraout, _, _, err := runCommand(command, input, environment, workingDirectory)
 	if err != nil {
 		return err
 	}
-	output, err := parseJSON(extraout)
+	jsonOutput, err := parseJSON(extraout)
 	if err != nil {
 		log.Printf("[DEBUG] error parsing sdout into json: %v", err)
-		output = make(map[string]string)
-		d.Set("output", output)
+		d.Set("output", extraout)
 	} else {
-		d.Set("output", output)
+		d.Set("output", extraout)
+		d.Set("output_json", jsonOutput)
 	}
 
-	d.Set("stdout", stdout)
-	d.Set("stderr", stderr)
-	d.Set("extraout", extraout)
 	d.SetId(hash(command))
 	return nil
 }
@@ -160,6 +138,8 @@ func runCommand(command string, input string, environment []string, workingDirec
 	// Run the command to completion
 	err := cmd.Run()
 	if err != nil {
+		log.Printf("[INFO] shell script command stdout was: \"%s\"", stdout.String())
+		log.Printf("[INFO] shell script command stderr was: \"%s\"", stderr.String())
 		return "", "", "", fmt.Errorf("Error running command '%s': '%v'", command, err)
 	}
 
