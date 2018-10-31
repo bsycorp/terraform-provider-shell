@@ -1,4 +1,7 @@
 # terraform-provider-shell
+
+[![Build Status](https://travis-ci.org/bsycorp/terraform-provider-shell.svg?branch=master)](https://travis-ci.org/bsycorp/terraform-provider-shell)
+
 ## Introduction
 This plugin is for wrapping shell scripts to make them fully fledged terraform resources. Please note that this is a backdoor into the terraform life cycle management, so it is up to you to implement your resources properly. It is recommended that you at least have some familiarity with the internals of terraform before attempting to use this provider. If you can't write your own resource using lifecycle events then you probably shouldn't be using this.
 
