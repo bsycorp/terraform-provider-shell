@@ -8,8 +8,8 @@ branches:
 script:
   - make
   - mkdir -p ./output/
-  - cp ./build/terraform-provider-shell-darwin ./output/terraform-provider-shell_darwin_amd64_v$TRAVIS_TAG
-  - cp ./build/terraform-provider-shell-linux ./output/terraform-provider-shell_linux_amd64_v$TRAVIS_TAG
+  - cp ./build/terraform-provider-shell-darwin ./output/terraform-provider-shell_v$TRAVIS_BRANCH-darwin-amd64
+  - cp ./build/terraform-provider-shell-linux ./output/terraform-provider-shell_v$TRAVIS_BRANCH-linux-amd64
 
 deploy:
   provider: releases
